@@ -1,0 +1,65 @@
+# 製品と人のつながり
+setwd(“working_dir")  # 作業ディレクトリ
+tcList   <- “tc_name_dic.txt"   # 社員名リスト
+mailList <- “mail_name_dic.txt" # メール⇔日本語名マッピング用
+prodList <- “product.txt"   # 社員名リスト
+library(igraph)   # グラフ描画用ライブラリ
+library(RMeCab)   # 日本語形態素解析用ライブラリ
+modeRead <- "r"                                           # ファイル読み込みモード
+txtFrom  <- "^From"                                       # メールアドレス抽出用
+txtDmain <- "@oracle.com"                                 # メールアドレス抽出用
+txtBig   <- "<"                                           # メールアドレス抽出用
+txtFreq  <- "Freq"                                        # クロス集計用
+files    <- list.files()                                  # ファイルリスト取得
+kekka2   <- data.frame()                                  # 空のデータフレーム作成
+tc       <- read.table(tcList, header=T)                  # テクコンメンバの読み込み
+ml       <- read.table(mailList, header=T, sep=",")       # メール⇔日本語名マッピング用
+pl       <- read.table(prodList, header=T)                # 製品リストの読み込み
+for (file.name in files) {                                # 週報データを読み込む
+  # 名前リスト抽出
+  kekka <- RMeCabFreq(file.name)                          # 日本語形態素解析
+  kekka <- cbind(kekka, FLG=c(rep(0, times=nrow(kekka)))) # 除外用フラグを追加(5列目)
+  kekka <- cbind(kekka, FLG2=c(rep(0, times=nrow(kekka)))) # 除外用フラグを追加(6列目)
+  kekka[na.omit(match(tc[,1], kekka[,1])), 5] <- 1        # テクコンメンバフラグオン
+  kekka[na.omit(match(pl[,1], kekka[,1])), 6] <- 1        # 製品リストフラグオン
+  # メールアドレス抽出(テキスト冒頭にFromを含むもの)
+  awrBuf <- file(file.name, modeRead )                    # ファイル読み込み
+  awrTxt <- as.list(readLines(awrBuf))                    # テキスト読み込み
+  close(awrBuf)                                           # ファイルクローズ
+  mailBuf <- matrix(awrTxt[grep(txtFrom, awrTxt, perl = TRUE)]) # メールアドレス抽出(テキスト冒頭にFromを含むもの)
+  mailAdr <- matrix(gsub("\"", "", toupper(sub(txtDmain, "", ifelse(regexpr(txtBig, mailBuf) == -1,
+             substr(mailBuf[,1], 7, nchar(mailBuf)), substr(mailBuf, 7, regexpr(txtBig, mailBuf)-2))))))
+  mailAdr2 <- matrix(if(!is.null(grep(mailAdr[1,],ml$empeng))) { ml[grep(mailAdr[1,],ml$empeng),2] } else { mailAdr[1,] }) # メールアドレス(英字)を日本語氏名に変換する
+  kekka   <- cbind(kekka, NAME=c(rep(mailAdr2, times=nrow(kekka))))  # 氏名を追加(6列目)
+  kekka2  <- rbind(kekka2, kekka[kekka[,6] == 1,])        # 結果をバインドする
+  
+}
+
+# 週報提出者、週報出現氏名でグループ化
+kekka3 <- aggregate(kekka2$Freq, list(kekka2$NAME, kekka2$Term), sum)
+# 自分自身へのエッジを削除
+kekka4 <- kekka3[substr(kekka3[,1], 1, regexpr(" ", kekka3[,1]) - 1)!=kekka3[,2],] sortlist<-order(kekka4[,2],decreasing = TRUE)
+fwn<-kekka4[sortlist,]
+
+wng<-graph.data.frame(fwn[fwn$x > 5,])                                      # 頻出度がn回以上を対象とする
+
+# 属性の表示の有効化
+igraph.options(print.graph.attributes=TRUE)
+igraph.options(print.vertex.attributes=TRUE)
+igraph.options(print.edge.attributes=TRUE)
+
+V(wng)$color <- rgb(221, 221, 221, maxColorValue=255)                       # 通常のノードはライトグレー
+V(wng)$frame.color <- rgb(221, 221, 221, maxColorValue=255)                 # ノードのフレームもライトグレー
+# DBソリューション部の週報提出メンバを赤色にする
+V(wng)[V(wng)$name%in%ml$empjp[ml$dept == "DBソリューション部"]]$color <- rgb(255, 0, 102, maxColorValue=255)
+V(wng)[V(wng)$name%in%ml$empjp[ml$dept == "DBソリューション部"]]$frame.color <- rgb(255, 0, 102, maxColorValue=255)
+V(wng)$size <- degree(wng)                                                  # ノードサイズを次数により決定
+
+E(wng)$weight <- E(wng)$x                                                   # 頻出度によって重みを付ける
+E(wng)[E(wng)$Freq > 10]$weight <- 11                                       # 10より頻出度の高いものは11にする
+
+tkplot(wng, layout=layout.fruchterman.reingold,
+      vertex.label=V(wng)$name, vertex.label.color="blue",
+      edge.width=E(wng)$weight*0.05, edge.curved = TRUE,
+      canvas.width=1200, canvas.height=600)
+
